@@ -1,0 +1,9 @@
+# RStudio files #
+#################
+*.RProj
+*.RData
+*.Rhistory
+
+# Folders #
+###############
+.Rproj.user
