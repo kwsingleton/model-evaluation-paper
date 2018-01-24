@@ -1,5 +1,5 @@
 ################################################################################################
-# Model Replication Analysis
+# Model Evaluation Analysis
 # 
 # Code applying four published Survival models to local data from UCLA.
 #
@@ -8,11 +8,12 @@
 
 ### Step 0
 ### Preload libraries (Installs missing libraries if required)
-list.of.packages <- c("survival","rms", "survivalROC")
+list.of.packages <- c("survival","rms", "survivalROC", "pROC")
 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
 if(length(new.packages)) install.packages(new.packages)
 library(rms)
 library(survivalROC)
+library(pROC)
 
 ### Step 1
 ### Load pre-processed UCLA and shared Gutman data
@@ -50,29 +51,29 @@ correction$kumar <- sum(coeffs$kumar * means$kumar)
 ### Step 3
 ### Calculate local data (UCLA) linear predictor and survival probability values
 
-##Helseth
-temp <- ucla_helseth[,-(1:3)]
+# Helseth
+temp <- ucla_helseth[,4:8]
 temp <- data.frame(mapply(`*`,temp,coeffs$helseth))
 ucla_helseth$total <- apply(temp, 1, sum)
 ucla_helseth$total_corr <- ucla_helseth$total - correction$helseth
 ucla_helseth$prob_ucla <- (s_t$ucla_median[1]^exp(ucla_helseth$total_corr))
 
-##Michaelsen
-temp <- ucla_michaelsen[,-(1:3)]
+# Michaelsen
+temp <- ucla_michaelsen[,4:7]
 temp <- data.frame(mapply(`*`,temp,coeffs$michaelsen))
 ucla_michaelsen$total <- apply(temp, 1, sum)
 ucla_michaelsen$total_corr <- ucla_michaelsen$total - correction$michaelsen
 ucla_michaelsen$prob_ucla <- (s_t$ucla_median[2]^exp(ucla_michaelsen$total_corr))
 
-##Gutman
-temp <- ucla_gutman[,-(1:3)]
+# Gutman
+temp <- ucla_gutman[,4:6]
 temp <- data.frame(mapply(`*`,temp,coeffs$gutman))
 ucla_gutman$total <- apply(temp, 1, sum)
 ucla_gutman$total_corr <- ucla_gutman$total - correction$gutman
 ucla_gutman$prob_ucla <- (s_t$ucla_median[3]^exp(ucla_gutman$total_corr))
 
-##Kumar
-temp <- ucla_kumar[,-(1:3)]
+# Kumar
+temp <- ucla_kumar[,4:7]
 temp <- data.frame(mapply(`*`,temp,coeffs$kumar))
 ucla_kumar$total <- apply(temp, 1, sum)
 ucla_kumar$total_corr <- ucla_kumar$total - correction$kumar
@@ -81,7 +82,7 @@ ucla_kumar$prob_ucla <- (s_t$ucla_median[4]^exp(ucla_kumar$total_corr))
 ### Step 4
 ### Calculate ROC curves and AUC values
 
-### ROC Curves
+# ROC Curves
 hROC <- survivalROC(Stime=ucla_helseth$SurvivalDays, status=ucla_helseth$OutcomeDead, 
                     marker = -ucla_helseth$prob_ucla, predict.time = ucla_median_survival, method="KM")
 mROC <- survivalROC(Stime=ucla_michaelsen$SurvivalDays, status=ucla_michaelsen$OutcomeDead, 
@@ -99,7 +100,7 @@ abline(a=0, b= 1, lty=2, col="gray")
 title(main = "ROC Curve Comparisons", xlab="False Positive Rate", ylab="True Positive Rate")
 legend("topleft", legend=c("Helseth", "Michaelsen", "Gutman", "Kumar"), col=c("red","black","green","orange"), lty=c(3,1,4,5), cex=0.8)
 
-### Collect AUC values and print
+# Collect AUC values and print
 auc_survROC <- list()
 auc_survROC$helseth <- hROC$AUC
 auc_survROC$michaelsen <- mROC$AUC
@@ -139,3 +140,48 @@ lines(x = c(0,1), y = c(0,1), lty=5, col="gray")
 title("Kumar")
 par(mfrow=c(1,1))
 
+### Step 6
+### Membership Model and Linear Predictor comparisons from framework 
+### by Debray et.al. (https://doi.org/10.1016/j.jclinepi.2014.06.018)
+
+### Approach 1: Distinguishing between individuals of validation and development sets
+# Copy data harmonize, and combine two datasets
+gutman_debray = gutman_data[2:6]
+colnames(gutman_debray) <- c("OutcomeDead", "SurvivalDays", "KPS", "F29", "F5")
+ucla_debray = ucla_gutman[2:6]
+gutman_debray$Sample = 1
+ucla_debray$Sample = 0
+combined_debray = rbind(gutman_debray, ucla_debray)
+
+# Create Membership Model with Logistic Regression
+membership_model <- glm(Sample ~ ., family=binomial(link='logit'), data=combined_debray)
+exp(cbind("Odds ratio" = coef(membership_model), confint.default(membership_model, level = 0.95)))
+
+# Get AUC for prediction of sample set
+combined_debray$lp <- predict(membership_model, combined_debray, type="response")
+
+# Compute standard ROC
+roc_curve <- roc(combined_debray$Sample ~ combined_debray$lp, ci=TRUE)
+plot(roc_curve, print.auc=TRUE, main="Membership Model ROC Curve")
+auc(roc_curve)
+
+### Approach 2: Comparing the predicted risks between development and validation samples
+
+# Generate linear predictors for Original Gutman cases
+temp <- gutman_data[,4:6]
+temp <- data.frame(mapply(`*`,temp,coeffs$gutman))
+gutman_data$total <- apply(temp, 1, sum)
+gutman_data$total_corr <- gutman_data$total - correction$gutman
+gutman_data$prob_ucla <- (s_t$ucla_median[1]^exp(gutman_data$total_corr))
+
+# Compare Difference of LP Means
+u_dev = mean(gutman_data$total)
+u_val = mean(ucla_gutman$total)
+message("Difference in Means")
+u_val - u_dev
+
+# Compare Ratio of LP Standard Deviations
+sd_dev = sd(gutman_data$total)
+sd_val = sd(ucla_gutman$total)
+message("Ratio of Deviations")
+sd_val/sd_dev
